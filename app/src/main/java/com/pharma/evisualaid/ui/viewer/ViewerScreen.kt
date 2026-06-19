@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -37,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +53,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -138,18 +141,35 @@ private fun LoadedViewer(
             .background(Color.Black)
             .onSizeChanged { viewModel.setViewportWidth(it.width) }
     ) {
+        // A gentle, low-bounce settle makes a released page glide shut instead of snapping.
+        val flingBehavior = PagerDefaults.flingBehavior(
+            state = pagerState,
+            snapAnimationSpec = spring(
+                dampingRatio = 0.82f,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+
         HorizontalPager(
             state = pagerState,
             beyondBoundsPageCount = 1,
+            flingBehavior = flingBehavior,
             userScrollEnabled = !zoom.isZoomed && !panelOpen,
             modifier = Modifier.fillMaxSize()
         ) { page ->
+            // The page being turned must paint on top of the one it reveals.
+            val onTop by remember(page) {
+                derivedStateOf {
+                    (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction > 0f
+                }
+            }
             PageViewer(
                 page = page,
                 viewModel = viewModel,
                 zoom = if (page == pagerState.currentPage) zoom else null,
                 pageOffset = { (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction },
-                onSingleTap = { if (panelOpen) panelOpen = false }
+                onSingleTap = { if (panelOpen) panelOpen = false },
+                modifier = Modifier.zIndex(if (onTop) 1f else 0f)
             )
         }
 

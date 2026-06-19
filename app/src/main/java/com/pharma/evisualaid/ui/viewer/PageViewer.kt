@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -31,7 +32,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.pharma.evisualaid.ui.theme.PrimaryTeal
-import kotlin.math.abs
 
 /**
  * Hoisted zoom/pan state for the active page, kept at the screen level so the pager can
@@ -75,11 +75,15 @@ class ZoomState {
 /**
  * A single full-bleed PDF page inside the pager.
  *
- * The page-turn "book feel" is a depth transform applied to the whole page based on its live
- * offset from the settled page ([pageOffset]): the outgoing page rotates back around the Y
- * axis, dims and shrinks slightly while the incoming page rotates flat — giving turning pages
- * weight instead of a flat carousel slide. (This is the documented fallback to a full
- * finger-tracking canvas curl; it reads as paper while staying robust on mid-range tablets.)
+ * The page-turn "book feel" comes from [pageOffset] — this page's live distance (in page
+ * units) from the centered page: `0` = centered, `>0` = lifting away to the left (the page
+ * being turned), `<0` = the next page waiting underneath.
+ *
+ * Every page is *pinned* to the viewport centre (we cancel the pager's flat slide), so instead
+ * of two pages sliding past each other the outgoing page hinges open around its left spine and
+ * darkens like paper catching shadow, revealing the next page sitting still beneath it. The
+ * host puts the turning page on top via z-index so the reveal reads correctly. (This is the
+ * documented fallback to a true finger-tracking curl; it stays smooth on mid-range tablets.)
  *
  * Pinch-to-zoom / pan / double-tap-reset apply to the inner image and only for the active page
  * ([zoom] is non-null only there).
@@ -102,14 +106,26 @@ fun PageViewer(
         modifier = modifier
             .fillMaxSize()
             .graphicsLayer {
-                val offset = pageOffset()
-                val fraction = abs(offset).coerceIn(0f, 1f)
-                // Replace the pager's flat slide with a hinge-style turn.
-                translationX = -offset * size.width
-                rotationY = offset * 30f
-                alpha = 1f - fraction * 0.3f
-                scaleY = 1f - fraction * 0.05f
-                cameraDistance = 12f * density
+                val o = pageOffset()
+                // Pin every page to the viewport centre (cancel the pager's slide).
+                translationX = o * size.width
+                cameraDistance = 18f * density
+                when {
+                    o > 0f -> {
+                        // This page is being turned: hinge it open around the left spine.
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                        rotationY = o.coerceIn(0f, 1f) * 78f
+                        alpha = if (o >= 1f) 0f else 1f
+                    }
+                    o < 0f -> {
+                        // Next page waiting underneath: flat, easing up to full size.
+                        val t = (1f + o).coerceIn(0f, 1f) // o:-1→0  ⇒  t:0→1
+                        val s = 0.94f + 0.06f * t
+                        scaleX = s
+                        scaleY = s
+                        alpha = if (o <= -1f) 0f else 1f
+                    }
+                }
             }
             .background(Color.Black)
             .onSizeChanged { boxSize = it }
@@ -163,5 +179,13 @@ fun PageViewer(
                     }
             )
         }
+
+        // Paper shadow: the page darkens as it lifts away (no effect on the page underneath).
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = pageOffset().coerceIn(0f, 1f) * 0.5f }
+                .background(Color.Black)
+        )
     }
 }
