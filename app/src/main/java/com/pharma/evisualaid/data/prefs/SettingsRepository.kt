@@ -37,7 +37,17 @@ class SettingsRepository(private val appContext: Context) {
         val ACCENT = longPreferencesKey("accent_argb")
         val SORT = stringPreferencesKey("default_sort")
         val AUTO_HIDE = longPreferencesKey("auto_hide_ms")
+        val CURRENT_PDF = stringPreferencesKey("current_pdf_path")
     }
+
+    /** Absolute path of the single PDF currently loaded in the immersive viewer, if any. */
+    val currentPdfPath: Flow<String?> =
+        appContext.dataStore.data.map { it[Keys.CURRENT_PDF] }
+
+    suspend fun setCurrentPdfPath(path: String?) =
+        appContext.dataStore.edit {
+            if (path == null) it.remove(Keys.CURRENT_PDF) else it[Keys.CURRENT_PDF] = path
+        }
 
     val settings: Flow<AppSettings> = appContext.dataStore.data.map { p ->
         AppSettings(

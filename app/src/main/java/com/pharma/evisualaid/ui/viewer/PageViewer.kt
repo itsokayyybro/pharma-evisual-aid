@@ -1,4 +1,4 @@
-package com.pharma.evisualaid.ui.presentation
+package com.pharma.evisualaid.ui.viewer
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -30,10 +30,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.pharma.evisualaid.ui.theme.PrimaryTeal
+import kotlin.math.abs
 
 /**
- * Hoisted zoom/pan state for the active page. Kept at the screen level so the pager can
- * disable horizontal scrolling while the page is zoomed in.
+ * Hoisted zoom/pan state for the active page, kept at the screen level so the pager can
+ * disable horizontal scrolling while a page is zoomed in.
  */
 class ZoomState {
     var scale by mutableFloatStateOf(1f)
@@ -61,27 +63,33 @@ class ZoomState {
         if (scale <= 1f || bounds == IntSize.Zero) return Offset.Zero
         val maxX = (bounds.width * (scale - 1f)) / 2f
         val maxY = (bounds.height * (scale - 1f)) / 2f
-        return Offset(
-            raw.x.coerceIn(-maxX, maxX),
-            raw.y.coerceIn(-maxY, maxY)
-        )
+        return Offset(raw.x.coerceIn(-maxX, maxX), raw.y.coerceIn(-maxY, maxY))
     }
 
     companion object {
         const val MIN_SCALE = 1f
-        const val MAX_SCALE = 3f
+        const val MAX_SCALE = 4f
     }
 }
 
 /**
- * Renders a single PDF page full-bleed with pinch-to-zoom (up to 3×), pan-when-zoomed and
- * double-tap-to-reset. [zoom] is non-null only for the active page; inert pages render flat.
+ * A single full-bleed PDF page inside the pager.
+ *
+ * The page-turn "book feel" is a depth transform applied to the whole page based on its live
+ * offset from the settled page ([pageOffset]): the outgoing page rotates back around the Y
+ * axis, dims and shrinks slightly while the incoming page rotates flat — giving turning pages
+ * weight instead of a flat carousel slide. (This is the documented fallback to a full
+ * finger-tracking canvas curl; it reads as paper while staying robust on mid-range tablets.)
+ *
+ * Pinch-to-zoom / pan / double-tap-reset apply to the inner image and only for the active page
+ * ([zoom] is non-null only there).
  */
 @Composable
 fun PageViewer(
     page: Int,
-    viewModel: PresentationViewModel,
+    viewModel: ViewerViewModel,
     zoom: ZoomState?,
+    pageOffset: () -> Float,
     onSingleTap: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -93,17 +101,26 @@ fun PageViewer(
     Box(
         modifier = modifier
             .fillMaxSize()
+            .graphicsLayer {
+                val offset = pageOffset()
+                val fraction = abs(offset).coerceIn(0f, 1f)
+                // Replace the pager's flat slide with a hinge-style turn.
+                translationX = -offset * size.width
+                rotationY = offset * 30f
+                alpha = 1f - fraction * 0.3f
+                scaleY = 1f - fraction * 0.05f
+                cameraDistance = 12f * density
+            }
             .background(Color.Black)
             .onSizeChanged { boxSize = it }
-            // Taps: single = toggle chrome, double = zoom toggle.
             .pointerInput(page, zoom) {
                 detectTapGestures(
                     onTap = { onSingleTap() },
                     onDoubleTap = { zoom?.toggleDoubleTap() }
                 )
             }
-            // Pinch + pan. We only consume single-finger drags while zoomed, so at 1× the
-            // horizontal swipe falls through to the pager for page navigation.
+            // Pinch + pan. Only consume drags while zoomed so 1× horizontal swipes fall
+            // through to the pager for page turns.
             .pointerInput(page, zoom) {
                 if (zoom == null) return@pointerInput
                 awaitEachGesture {
@@ -113,8 +130,7 @@ fun PageViewer(
                         val pressedCount = event.changes.count { it.pressed }
                         val zoomChange = event.calculateZoom()
                         val panChange = event.calculatePan()
-                        val multiTouch = pressedCount >= 2
-                        if (multiTouch || zoom.isZoomed) {
+                        if (pressedCount >= 2 || zoom.isZoomed) {
                             zoom.apply(zoomChange, panChange, boxSize)
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
@@ -126,6 +142,7 @@ fun PageViewer(
         val bmp = bitmap
         if (bmp == null) {
             CircularProgressIndicator(
+                color = PrimaryTeal,
                 strokeWidth = 2.dp,
                 modifier = Modifier.size(36.dp)
             )
