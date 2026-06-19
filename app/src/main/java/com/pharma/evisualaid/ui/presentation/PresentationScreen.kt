@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.pharma.evisualaid.ui.presentation
 
 import android.content.pm.ActivityInfo
