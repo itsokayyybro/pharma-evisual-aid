@@ -10,6 +10,7 @@ import com.pharma.evisualaid.data.prefs.SettingsRepository
 import com.pharma.evisualaid.util.BitmapCache
 import com.pharma.evisualaid.util.FileUtils
 import com.pharma.evisualaid.util.PdfDocument
+import com.pharma.evisualaid.util.PdfTitleExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +40,9 @@ data class ViewerState(
     /** true while pages 0–2 are being rendered after a fresh load. */
     val isLoading: Boolean = false,
     /** One-shot flag: a brand-new catalog was just loaded (drives the snackbar). */
-    val justLoadedNew: Boolean = false
+    val justLoadedNew: Boolean = false,
+    /** 0-based page index → one-word heading title; missing pages fall back to the number. */
+    val pageTitles: Map<Int, String> = emptyMap()
 )
 
 /**
@@ -70,6 +73,7 @@ class ViewerViewModel(
     private var viewportWidthPx = DEFAULT_RENDER_WIDTH
     private var viewportLocked = false
     private var backgroundJob: Job? = null
+    private var titlesJob: Job? = null
 
     init {
         // Restore the last loaded PDF, if any, so subsequent launches skip straight in.
@@ -87,6 +91,7 @@ class ViewerViewModel(
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true) }
             backgroundJob?.cancel()
+            titlesJob?.cancel()
             // The current catalog always lives at the same path, so wipe its page cache first.
             withContext(Dispatchers.IO) { clearDiskPages() }
             val target = withContext(Dispatchers.IO) {
@@ -129,10 +134,22 @@ class ViewerViewModel(
                 filePath = file.absolutePath,
                 totalPages = total,
                 currentPage = 0,
-                justLoadedNew = isNew
+                justLoadedNew = isNew,
+                pageTitles = emptyMap()
             )
         }
         startBackgroundRender(total)
+        startTitleExtraction(file, total)
+    }
+
+    /** Reads the text layer off the main thread and publishes one-word page titles. */
+    private fun startTitleExtraction(file: File, total: Int) {
+        titlesJob?.cancel()
+        titlesJob = viewModelScope.launch(Dispatchers.Default) {
+            val titles = runCatching { PdfTitleExtractor.extractTitles(file, total) }
+                .getOrDefault(emptyMap())
+            if (titles.isNotEmpty()) _state.update { it.copy(pageTitles = titles) }
+        }
     }
 
     /** Streams the remaining pages to the on-disk JPEG cache without blocking the UI. */
@@ -200,6 +217,7 @@ class ViewerViewModel(
     override fun onCleared() {
         super.onCleared()
         backgroundJob?.cancel()
+        titlesJob?.cancel()
         document?.close()
         document = null
         pageCache.clear()

@@ -12,3 +12,9 @@
 
 # Compose tooling keeps
 -keep class androidx.compose.** { *; }
+
+# PdfBox-Android (text extraction) — uses reflection + bundled font resources.
+-keep class com.tom_roush.** { *; }
+-dontwarn com.tom_roush.**
+-dontwarn java.awt.**
+-dontwarn javax.**

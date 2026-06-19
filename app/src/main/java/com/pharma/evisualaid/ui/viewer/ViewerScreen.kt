@@ -220,6 +220,7 @@ private fun LoadedViewer(
                 pageCount = state.totalPages,
                 currentPage = pagerState.currentPage,
                 accent = PrimaryTeal,
+                titles = state.pageTitles,
                 viewModel = viewModel,
                 onSelectPage = { page ->
                     panelOpen = false

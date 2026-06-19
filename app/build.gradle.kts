@@ -104,6 +104,10 @@ dependencies {
     // Kotlinx serialization for tag list (JSON in DB)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
+    // PdfBox-Android — extracts the PDF text layer to derive one-word page titles for the
+    // index panel. Rendering still uses the native PdfRenderer; this is text-only.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+
     // Debug tooling
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pharma.evisualaid.ui.theme.DisplayFamily
@@ -56,6 +57,7 @@ fun SideIndexPanel(
     pageCount: Int,
     currentPage: Int,
     accent: Color,
+    titles: Map<Int, String>,
     viewModel: ViewerViewModel,
     onSelectPage: (Int) -> Unit,
     modifier: Modifier = Modifier
@@ -114,6 +116,7 @@ fun SideIndexPanel(
                         page = page,
                         isActive = page == currentPage,
                         accent = accent,
+                        title = titles[page],
                         viewModel = viewModel,
                         onClick = { onSelectPage(page) }
                     )
@@ -128,6 +131,7 @@ private fun IndexThumbnail(
     page: Int,
     isActive: Boolean,
     accent: Color,
+    title: String?,
     viewModel: ViewerViewModel,
     onClick: () -> Unit
 ) {
@@ -156,7 +160,7 @@ private fun IndexThumbnail(
             if (bmp != null) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Page ${page + 1} thumbnail",
+                    contentDescription = title?.let { "Page ${page + 1}: $it" } ?: "Page ${page + 1}",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -168,13 +172,26 @@ private fun IndexThumbnail(
                 )
             }
         }
-        Spacer(Modifier.size(4.dp))
+        Spacer(Modifier.size(5.dp))
+        // The one-word heading the presenter navigates by; falls back to the page number.
         Text(
-            text = "${page + 1}",
-            fontFamily = MonoFamily,
-            fontSize = 11.sp,
+            text = title ?: "Page ${page + 1}",
+            fontFamily = DisplayFamily,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
             color = if (isActive) accent else Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )
+        if (title != null) {
+            Text(
+                text = "p.${page + 1}",
+                fontFamily = MonoFamily,
+                fontSize = 9.sp,
+                color = Color(0xFF9E9E9E),
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
