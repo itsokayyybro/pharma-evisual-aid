@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stylised open-book / catalog mark inside the safe zone (center 72x72). -->
+    <group android:translateX="18" android:translateY="22">
+        <path
+            android:fillColor="#00BCD4"
+            android:pathData="M36,12 C30,8 22,7 14,9 C12,9.4 11,10.6 11,12 L11,52 C11,53.6 12.6,54.8 14,54.4 C22,52.6 30,53.6 36,57 Z" />
+        <path
+            android:fillColor="#4DD0E1"
+            android:pathData="M36,12 C42,8 50,7 58,9 C60,9.4 61,10.6 61,12 L61,52 C61,53.6 59.4,54.8 58,54.4 C50,52.6 42,53.6 36,57 Z" />
+        <path
+            android:fillColor="#E8EAF6"
+            android:pathData="M33,28 h6 v6 h6 v6 h-6 v6 h-6 v-6 h-6 v-6 h6 z" />
+    </group>
+</vector>

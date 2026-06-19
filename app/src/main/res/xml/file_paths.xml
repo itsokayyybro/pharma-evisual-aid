@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- App-private files dir: catalogs, thumbnails and exported zips live here. -->
+    <files-path name="catalogs" path="catalogs/" />
+    <files-path name="thumbnails" path="thumbnails/" />
+    <cache-path name="exports" path="exports/" />
+</paths>
