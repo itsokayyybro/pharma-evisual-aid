@@ -111,17 +111,12 @@ fun CatalogCard(
                 )
 
                 // Selection check overlay
-                AnimatedVisibility(
+                SelectionCheckOverlay(
                     visible = selectionMode,
+                    selected = selected,
+                    accent = accent,
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
-                ) {
-                    Icon(
-                        imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
-                        contentDescription = if (selected) "Selected" else "Not selected",
-                        tint = if (selected) accent else Color.White,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
+                )
             }
 
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -169,6 +164,25 @@ fun CatalogCard(
                 }
             }
         }
+    }
+}
+
+// Extracted to a scope-free composable so `AnimatedVisibility` resolves to the top-level
+// overload rather than the outer Column's `ColumnScope.AnimatedVisibility`.
+@Composable
+private fun SelectionCheckOverlay(
+    visible: Boolean,
+    selected: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(visible = visible, modifier = modifier) {
+        Icon(
+            imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+            contentDescription = if (selected) "Selected" else "Not selected",
+            tint = if (selected) accent else Color.White,
+            modifier = Modifier.size(28.dp)
+        )
     }
 }
 
