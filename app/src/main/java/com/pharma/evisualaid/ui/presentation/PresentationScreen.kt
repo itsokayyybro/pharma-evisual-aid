@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -248,7 +249,7 @@ private fun ImmersiveMode() {
 private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.detectTapClose(
     onTap: () -> Unit
 ) {
-    androidx.compose.foundation.gestures.detectTapGestures(onTap = { onTap() })
+    detectTapGestures(onTap = { onTap() })
 }
 
 @Composable
