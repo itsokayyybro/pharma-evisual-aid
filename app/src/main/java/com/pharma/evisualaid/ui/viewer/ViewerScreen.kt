@@ -3,12 +3,11 @@
 package com.pharma.evisualaid.ui.viewer
 
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -25,9 +24,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.PagerDefaults
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
@@ -38,11 +34,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +48,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -63,8 +57,6 @@ import com.pharma.evisualaid.ui.AppViewModelProvider
 import com.pharma.evisualaid.ui.theme.PrimaryTeal
 import com.pharma.evisualaid.ui.util.LockScreenOrientation
 import com.pharma.evisualaid.ui.util.findActivity
-import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 /**
  * The entire app UI: one landscape-locked, edge-to-edge immersive PDF viewer.
@@ -103,16 +95,24 @@ private fun LoadedViewer(
     viewModel: ViewerViewModel,
     onUpload: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    val zoom = remember { ZoomState() }
+    var currentPage by remember { mutableIntStateOf(0) }
     var panelOpen by remember { mutableStateOf(false) }
     val snackbarHost = remember { SnackbarHostState() }
 
-    val pagerState = rememberPagerState(pageCount = { state.totalPages })
+    // Pre-decoded page bitmaps for the curl (current + both neighbours). On a completed turn we
+    // swap these in place so the new page is on screen the same frame the curl finishes, with
+    // no reload flash; the loader below then refreshes the now-stale neighbour.
+    var current by remember { mutableStateOf<Bitmap?>(null) }
+    var nextPage by remember { mutableStateOf<Bitmap?>(null) }
+    var prevPage by remember { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(pagerState.currentPage) {
-        zoom.reset()
-        viewModel.onPageSettled(pagerState.currentPage)
+    LaunchedEffect(state.filePath) { currentPage = 0 }
+
+    LaunchedEffect(currentPage, state.totalPages, state.filePath) {
+        current = viewModel.getPage(currentPage)
+        nextPage = if (currentPage + 1 < state.totalPages) viewModel.getPage(currentPage + 1) else null
+        prevPage = if (currentPage - 1 >= 0) viewModel.getPage(currentPage - 1) else null
+        viewModel.onPageSettled(currentPage)
     }
 
     // "New catalog loaded" toast after an import.
@@ -125,15 +125,8 @@ private fun LoadedViewer(
 
     BackHandler(enabled = panelOpen) { panelOpen = false }
 
-    fun jumpTo(target: Int) {
-        val safe = target.coerceIn(0, state.totalPages - 1)
-        scope.launch {
-            // Jumping more than 5 pages snaps (reads as a crossfade since nothing tweens
-            // through the gap); nearby jumps spring-turn like a normal page flip.
-            if (abs(safe - pagerState.currentPage) > 5) pagerState.scrollToPage(safe)
-            else pagerState.animateScrollToPage(safe, animationSpec = spring(stiffness = Spring.StiffnessMedium))
-        }
-    }
+    // Index-panel jump: a direct cut (acts as the crossfade for far jumps).
+    fun jumpTo(target: Int) { currentPage = target.coerceIn(0, state.totalPages - 1) }
 
     Box(
         Modifier
@@ -141,35 +134,28 @@ private fun LoadedViewer(
             .background(Color.Black)
             .onSizeChanged { viewModel.setViewportWidth(it.width) }
     ) {
-        // A gentle, low-bounce settle makes a released page glide shut instead of snapping.
-        val flingBehavior = PagerDefaults.flingBehavior(
-            state = pagerState,
-            snapAnimationSpec = spring(
-                dampingRatio = 0.82f,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        )
-
-        HorizontalPager(
-            state = pagerState,
-            beyondBoundsPageCount = 1,
-            flingBehavior = flingBehavior,
-            userScrollEnabled = !zoom.isZoomed && !panelOpen,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            // The page being turned must paint on top of the one it reveals.
-            val onTop by remember(page) {
-                derivedStateOf {
-                    (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction > 0f
-                }
+        val bmp = current
+        if (bmp == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = PrimaryTeal, strokeWidth = 3.dp)
             }
-            PageViewer(
-                page = page,
-                viewModel = viewModel,
-                zoom = if (page == pagerState.currentPage) zoom else null,
-                pageOffset = { (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction },
-                onSingleTap = { if (panelOpen) panelOpen = false },
-                modifier = Modifier.zIndex(if (onTop) 1f else 0f)
+        } else {
+            PageCurlCanvas(
+                currentPageBitmap = bmp,
+                nextPageBitmap = nextPage,
+                previousPageBitmap = prevPage,
+                onPageAdvanced = {
+                    prevPage = current
+                    current = nextPage
+                    currentPage++
+                },
+                onPageRetreated = {
+                    nextPage = current
+                    current = prevPage
+                    currentPage--
+                },
+                onTap = { if (panelOpen) panelOpen = false },
+                modifier = Modifier.fillMaxSize()
             )
         }
 
@@ -218,7 +204,7 @@ private fun LoadedViewer(
         ) {
             SideIndexPanel(
                 pageCount = state.totalPages,
-                currentPage = pagerState.currentPage,
+                currentPage = currentPage,
                 accent = PrimaryTeal,
                 titles = state.pageTitles,
                 viewModel = viewModel,

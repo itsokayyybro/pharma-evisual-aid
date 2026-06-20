@@ -10,7 +10,7 @@ import com.pharma.evisualaid.data.prefs.SettingsRepository
 import com.pharma.evisualaid.util.BitmapCache
 import com.pharma.evisualaid.util.FileUtils
 import com.pharma.evisualaid.util.PdfDocument
-import com.pharma.evisualaid.util.PdfTitleExtractor
+import com.pharma.evisualaid.util.PdfTextExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -203,6 +203,11 @@ class ViewerViewModel(
 
     fun onPageSettled(page: Int) {
         _state.update { it.copy(currentPage = page) }
+        // Keep the immediate neighbours warm so a page-curl never waits on I/O.
+        val total = _state.value.totalPages
+        listOf(page - 1, page + 1)
+            .filter { it in 0 until total }
+            .forEach { neighbour -> viewModelScope.launch { getPage(neighbour) } }
     }
 
     /** Acknowledge the "New catalog loaded" snackbar so it doesn't re-show on recomposition. */
