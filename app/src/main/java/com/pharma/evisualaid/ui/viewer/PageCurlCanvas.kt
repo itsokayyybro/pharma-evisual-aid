@@ -78,12 +78,13 @@ class ZoomState {
 }
 
 /**
- * A physically-styled, finger-tracked page-curl viewer. Self-contained: it owns its curl and
- * zoom state and only needs the three neighbouring page bitmaps plus page-change callbacks.
- *
- * Per frame the Canvas paints, bottom-to-top: the page underneath (next/previous), the flat
- * remainder of the current page, the shadow the lifting flap casts, the folded-under flap
- * (reflected current page + underside tint), and a faint crease highlight.
+ * A physically-styled, finger-tracked page-curl viewer. 
+ * 
+ * Features:
+ * - "Anywhere" picking: Grab any point along the left/right edge.
+ * - Smooth white backside: The underside of the page is clean white with depth shading.
+ * - Under-rendering: The next/previous page is visible throughout the turn.
+ * - Continuous tracking: Animation follows the finger until release.
  */
 @Composable
 fun PageCurlCanvas(
@@ -100,25 +101,21 @@ fun PageCurlCanvas(
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
 
-    // Reused native paints (allocating per-frame would blow the 8ms budget).
     val bitmapPaint = remember { Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply { isDither = true } }
     val shadowPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
     val creasePaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
 
-    // Reset zoom/curl whenever the page actually changes underneath us.
     LaunchedEffect(currentPageBitmap) { zoom.reset(); curl.clear() }
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            // Single / double tap: chrome toggle and zoom toggle.
             .pointerInput(currentPageBitmap) {
                 detectTapGestures(
                     onTap = { onTap() },
                     onDoubleTap = { if (!curl.active) zoom.toggleDoubleTap() }
                 )
             }
-            // Two-finger pinch zoom.
             .pointerInput(currentPageBitmap) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -131,10 +128,11 @@ fun PageCurlCanvas(
                     } while (event.changes.any { it.pressed })
                 }
             }
-            // One-finger drag: pan when zoomed, otherwise drive the curl.
             .pointerInput(currentPageBitmap, nextPageBitmap, previousPageBitmap) {
                 val velocity = VelocityTracker()
                 var panning = false
+                var grabOffset = Offset.Zero
+
                 detectDragGestures(
                     onDragStart = { start ->
                         velocity.resetTracking()
@@ -144,17 +142,24 @@ fun PageCurlCanvas(
                         }
                         panning = false
                         val page = fitRect(currentPageBitmap, size.width.toFloat(), size.height.toFloat())
-                        if (start.x > size.width / 2f) {
-                            // Forward turn — lift the bottom-right corner.
+                        
+                        // Pick the edge closest to the touch.
+                        val isForward = start.x > size.width / 2f
+                        val edgeX = if (isForward) page.right else page.left
+                        val edgeY = start.y.coerceIn(page.top, page.bottom)
+                        val anchor = Offset(edgeX, edgeY)
+
+                        if (isForward) {
                             if (nextPageBitmap != null) {
-                                curl.begin(CurlDirection.FORWARD, Offset(page.right, page.bottom), start)
+                                grabOffset = start - anchor
+                                curl.begin(CurlDirection.FORWARD, anchor, anchor)
                             } else {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
                         } else {
-                            // Backward turn — lift the bottom-left corner.
                             if (previousPageBitmap != null) {
-                                curl.begin(CurlDirection.BACKWARD, Offset(page.left, page.bottom), start)
+                                grabOffset = start - anchor
+                                curl.begin(CurlDirection.BACKWARD, anchor, anchor)
                             } else {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
@@ -166,16 +171,18 @@ fun PageCurlCanvas(
                             zoom.apply(1f, change.positionChange(), size)
                         } else if (curl.active) {
                             velocity.addPosition(change.uptimeMillis, change.position)
-                            curl.touch = change.position
+                            // Track finger while maintaining the initial relative offset.
+                            curl.touch = change.position - grabOffset
                         }
                     },
                     onDragEnd = {
                         if (!panning && curl.active) {
                             val page = fitRect(currentPageBitmap, size.width.toFloat(), size.height.toFloat())
                             val speed = velocity.calculateVelocity().let { hypot(it.x.toDouble(), it.y.toDouble()) }
-                            val fast = speed > 2000.dp.toPx()
+                            val fast = speed > 1200.dp.toPx()
                             val progress = CurlGeometry.progress(curl.corner, curl.touch, page)
-                            val complete = fast || progress > 0.42f
+                            // Responsive threshold: complete if past 35% or fast swipe.
+                            val complete = fast || progress > 0.35f
                             scope.launch {
                                 releaseCurl(curl, page, complete, fast) {
                                     if (curl.direction == CurlDirection.FORWARD) onPageAdvanced()
@@ -208,7 +215,7 @@ fun PageCurlCanvas(
     }
 }
 
-/** Springs the curl forward to completion or back to flat, interpolating [CurlState.touch]. */
+/** Interpolates the touch point to its final resting place (either edge). */
 private suspend fun releaseCurl(
     curl: CurlState,
     page: Rect,
@@ -219,16 +226,20 @@ private suspend fun releaseCurl(
     val start = curl.touch
     val target = when {
         !complete -> curl.corner
-        curl.direction == CurlDirection.FORWARD -> Offset(page.left, page.bottom)
-        else -> Offset(page.right, page.bottom)
+        curl.direction == CurlDirection.FORWARD -> Offset(page.left - 400f, curl.corner.y)
+        else -> Offset(page.right + 400f, curl.corner.y)
     }
     curl.dragging = false
     val anim = Animatable(0f)
-    val spec = when {
-        fast -> tween<Float>(120)
-        complete -> spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
-        else -> spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+    val spec = if (fast) {
+        tween<Float>(180)
+    } else {
+        spring(
+            dampingRatio = 0.9f, 
+            stiffness = Spring.StiffnessMediumLow
+        )
     }
+    
     anim.animateTo(1f, spec) { curl.touch = lerp(start, target, value) }
     if (complete) onCompleted()
     curl.clear()
@@ -250,7 +261,6 @@ private fun DrawScope.drawScene(
     val page = fitRect(current, w, h)
 
     if (!curl.active) {
-        // Flat page (with optional zoom).
         drawIntoCanvas { canvas ->
             val m = AndroidMatrix(base)
             if (zoom.scale != 1f) {
@@ -265,6 +275,7 @@ private fun DrawScope.drawScene(
     val corner = curl.corner
     val touch = curl.touch
     val below = if (curl.direction == CurlDirection.FORWARD) next else previous
+    
     val flap = CurlGeometry.flapPath(corner, touch, page)
     val visible = CurlGeometry.visiblePath(corner, touch, page)
     val reflected = CurlGeometry.reflectedFlapPath(corner, touch, page)
@@ -273,53 +284,63 @@ private fun DrawScope.drawScene(
     drawIntoCanvas { canvas ->
         val nc = canvas.nativeCanvas
 
-        // 1 — page underneath.
-        if (below != null) nc.drawBitmap(below, fitMatrix(below, w, h), bitmapPaint)
-        else nc.drawColor(android.graphics.Color.BLACK)
+        // 1 — Bottom: The page underneath.
+        if (below != null) {
+            nc.drawBitmap(below, fitMatrix(below, w, h), bitmapPaint)
+        } else {
+            nc.drawColor(android.graphics.Color.BLACK)
+        }
 
-        // 2 — shadow the lifting flap casts on the page below (dark at the fold, fading out).
+        // 2 — Shadow cast by the lifted flap onto the bottom page.
         canvas.save()
         canvas.clipPath(flap)
         shadowPaint.shader = LinearGradient(
             foldMid.x, foldMid.y, corner.x, corner.y,
-            0x66000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
+            0x4D000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
         )
         nc.drawPaint(shadowPaint)
         shadowPaint.shader = null
         canvas.restore()
 
-        // 3 — flat remainder of the current page.
+        // 3 — Middle: The flat remainder of the current page.
         canvas.save()
         canvas.clipPath(visible)
         nc.drawBitmap(current, base, bitmapPaint)
-        canvas.restore()
-
-        // 4 — the folded-under flap: reflected page + underside tint + soft shading.
-        canvas.save()
-        canvas.clipPath(reflected)
-        val flapMatrix = AndroidMatrix(CurlGeometry.reflectMatrix(corner, touch)).apply { preConcat(base) }
-        nc.drawBitmap(current, flapMatrix, bitmapPaint)
-        nc.drawColor(0x22000000) // darken the underside
+        
+        // Soft crease shadow on the current page.
         shadowPaint.shader = LinearGradient(
-            touch.x, touch.y, foldMid.x, foldMid.y,
-            0x55000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
+            foldMid.x, foldMid.y, touch.x, touch.y,
+            0x26000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
         )
         nc.drawPaint(shadowPaint)
         shadowPaint.shader = null
         canvas.restore()
 
-        // 5 — faint crease highlight along the fold line (clipped to the page).
+        // 4 — Top: The white backside of the turning page.
+        canvas.save()
+        canvas.clipPath(reflected)
+        nc.drawColor(android.graphics.Color.WHITE)
+        
+        // Inner gradient on the white backside to simulate curl depth.
+        shadowPaint.shader = LinearGradient(
+            foldMid.x, foldMid.y, touch.x, touch.y,
+            0x33000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
+        )
+        nc.drawPaint(shadowPaint)
+        shadowPaint.shader = null
+        canvas.restore()
+
+        // 5 — Crease line highlight.
         canvas.save()
         canvas.clipRect(page.left, page.top, page.right, page.bottom)
         val (fa, fb) = CurlGeometry.foldLine(corner, touch)
-        creasePaint.color = 0x18FFFFFF
-        creasePaint.strokeWidth = 3.dp.toPx()
+        creasePaint.color = 0x1AFFFFFF
+        creasePaint.strokeWidth = 1.dp.toPx()
         nc.drawLine(fa.x, fa.y, fb.x, fb.y, creasePaint)
         canvas.restore()
     }
 }
 
-/** Matrix that fits [bmp] into the canvas preserving aspect ratio (letterbox-centred). */
 private fun fitMatrix(bmp: Bitmap, w: Float, h: Float): AndroidMatrix {
     val s = min(w / bmp.width, h / bmp.height)
     val dw = bmp.width * s
@@ -330,7 +351,6 @@ private fun fitMatrix(bmp: Bitmap, w: Float, h: Float): AndroidMatrix {
     }
 }
 
-/** The on-screen rectangle [bmp] occupies under [fitMatrix]. */
 private fun fitRect(bmp: Bitmap, w: Float, h: Float): Rect {
     val s = min(w / bmp.width, h / bmp.height)
     val dw = bmp.width * s
