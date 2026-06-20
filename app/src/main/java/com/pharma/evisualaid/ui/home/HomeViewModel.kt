@@ -22,9 +22,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Built-in category filters always shown, even before any catalog uses them. */
-private val DEFAULT_FILTERS = listOf("Cardiology", "GI", "Nephrology")
-
 const val FILTER_ALL = "All"
 const val FILTER_RECENT = "Recent"
 
@@ -84,7 +81,9 @@ class HomeViewModel(
         val filters = buildList {
             add(FILTER_ALL)
             add(FILTER_RECENT)
-            (DEFAULT_FILTERS + discoveredTags + ctrl.extraFilters).distinct()
+            // Categories start empty; they come only from tags on catalogs and the ones the
+            // user adds via "Add Filter".
+            (discoveredTags + ctrl.extraFilters).distinct()
                 .sorted()
                 .forEach { add(it) }
         }
