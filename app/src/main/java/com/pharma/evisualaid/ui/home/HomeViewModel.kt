@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -55,8 +56,7 @@ private data class HomeControls(
     val isSearchActive: Boolean = false,
     val sortOverride: SortOrder? = null,
     val selectionMode: Boolean = false,
-    val selectedIds: Set<String> = emptySet(),
-    val extraFilters: List<String> = emptyList()
+    val selectedIds: Set<String> = emptySet()
 )
 
 class HomeViewModel(
@@ -81,9 +81,9 @@ class HomeViewModel(
         val filters = buildList {
             add(FILTER_ALL)
             add(FILTER_RECENT)
-            // Categories start empty; they come only from tags on catalogs and the ones the
-            // user adds via "Add Filter".
-            (discoveredTags + ctrl.extraFilters).distinct()
+            // Categories start empty; they come from tags on catalogs and the user-defined
+            // categories managed in Settings (also added via the "Add Filter" chip).
+            (discoveredTags + settings.categories).distinct()
                 .sorted()
                 .forEach { add(it) }
         }
@@ -156,8 +156,14 @@ class HomeViewModel(
 
     fun addCustomFilter(name: String) {
         val clean = name.trim()
-        if (clean.isNotEmpty()) {
-            controls.update { it.copy(extraFilters = (it.extraFilters + clean).distinct(), activeFilter = clean) }
+        if (clean.isEmpty()) return
+        // Persist the new category so it survives restarts and shows up in Settings too.
+        viewModelScope.launch {
+            val current = settingsRepository.settings.first().categories
+            if (current.none { it.equals(clean, ignoreCase = true) }) {
+                settingsRepository.setCategories(current + clean)
+            }
+            controls.update { it.copy(activeFilter = clean) }
         }
     }
 

@@ -52,8 +52,21 @@ class SettingsViewModel(
     fun setDefaultSort(order: SortOrder) =
         viewModelScope.launch { settingsRepository.setDefaultSort(order) }
 
-    fun setAutoHideDelay(ms: Long) =
-        viewModelScope.launch { settingsRepository.setAutoHideDelay(ms) }
+    fun addCategory(name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            val current = settings.value.categories
+            if (current.none { it.equals(clean, ignoreCase = true) }) {
+                settingsRepository.setCategories(current + clean)
+            }
+        }
+    }
+
+    fun removeCategory(name: String) =
+        viewModelScope.launch {
+            settingsRepository.setCategories(settings.value.categories.filterNot { it == name })
+        }
 
     fun exportAllCatalogs() {
         viewModelScope.launch {

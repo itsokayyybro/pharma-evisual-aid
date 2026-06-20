@@ -20,14 +20,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,21 +58,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pharma.evisualaid.BuildConfig
 import com.pharma.evisualaid.data.model.SortOrder
-import com.pharma.evisualaid.data.prefs.AppSettings
 import com.pharma.evisualaid.ui.AppViewModelProvider
 import com.pharma.evisualaid.ui.components.ConfirmDialog
 import com.pharma.evisualaid.ui.components.TextEntryDialog
 import com.pharma.evisualaid.ui.theme.AccentPresets
 import com.pharma.evisualaid.ui.theme.TextSecondary
-
-private data class AutoHideOption(val label: String, val ms: Long)
-
-private val AUTO_HIDE_OPTIONS = listOf(
-    AutoHideOption("1s", 1_000L),
-    AutoHideOption("3s", 3_000L),
-    AutoHideOption("5s", 5_000L),
-    AutoHideOption("Never", AppSettings.NEVER_HIDE)
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +75,7 @@ fun SettingsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showNameDialog by remember { mutableStateOf(false) }
+    var showCategoryDialog by remember { mutableStateOf(false) }
     var clearStep by remember { mutableIntStateOf(0) }
 
     val pickLogo = rememberLauncherForActivityResult(
@@ -209,16 +201,44 @@ fun SettingsScreen(
                 )
             }
 
-            // Auto-hide delay
-            SettingSection("Auto-Hide UI Delay") {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    AUTO_HIDE_OPTIONS.forEach { option ->
-                        FilterChip(
-                            selected = settings.autoHideDelayMs == option.ms,
-                            onClick = { viewModel.setAutoHideDelay(option.ms) },
-                            label = { Text(option.label) }
-                        )
+            // Categories
+            SettingSection("Categories") {
+                if (settings.categories.isEmpty()) {
+                    Text(
+                        text = "No categories yet",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        settings.categories.forEach { category ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = category,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(onClick = { viewModel.removeCategory(category) }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "Remove $category",
+                                        tint = TextSecondary
+                                    )
+                                }
+                            }
+                        }
                     }
+                }
+                OutlinedButton(onClick = { showCategoryDialog = true }) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text("  Add Category")
                 }
             }
 
@@ -260,6 +280,16 @@ fun SettingsScreen(
             initial = settings.companyName,
             onConfirm = { viewModel.setCompanyName(it); showNameDialog = false },
             onDismiss = { showNameDialog = false }
+        )
+    }
+
+    if (showCategoryDialog) {
+        TextEntryDialog(
+            title = "Add Category",
+            label = "Category name (e.g. Cardiology)",
+            confirmLabel = "Add",
+            onConfirm = { viewModel.addCategory(it); showCategoryDialog = false },
+            onDismiss = { showCategoryDialog = false }
         )
     }
 

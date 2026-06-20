@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.pharma.evisualaid.data.model.SortOrder
+import com.pharma.evisualaid.data.repository.TagCodec
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -17,12 +18,11 @@ data class AppSettings(
     val companyLogoUri: String? = null,
     val accentColorArgb: Long = DEFAULT_ACCENT,
     val defaultSort: SortOrder = SortOrder.DATE_NEWEST,
-    /** Auto-hide delay in ms; [NEVER_HIDE] means the UI never auto-hides. */
-    val autoHideDelayMs: Long = 3_000L
+    /** User-defined catalog categories, managed in Settings. */
+    val categories: List<String> = emptyList()
 ) {
     companion object {
         const val DEFAULT_ACCENT = 0xFF00BCD4L // medical teal
-        const val NEVER_HIDE = -1L
     }
 }
 
@@ -36,7 +36,7 @@ class SettingsRepository(private val appContext: Context) {
         val LOGO_URI = stringPreferencesKey("logo_uri")
         val ACCENT = longPreferencesKey("accent_argb")
         val SORT = stringPreferencesKey("default_sort")
-        val AUTO_HIDE = longPreferencesKey("auto_hide_ms")
+        val CATEGORIES = stringPreferencesKey("categories")
         val CURRENT_PDF = stringPreferencesKey("current_pdf_path")
     }
 
@@ -55,7 +55,7 @@ class SettingsRepository(private val appContext: Context) {
             companyLogoUri = p[Keys.LOGO_URI],
             accentColorArgb = p[Keys.ACCENT] ?: AppSettings.DEFAULT_ACCENT,
             defaultSort = SortOrder.fromName(p[Keys.SORT]),
-            autoHideDelayMs = p[Keys.AUTO_HIDE] ?: 3_000L
+            categories = TagCodec.decode(p[Keys.CATEGORIES])
         )
     }
 
@@ -73,6 +73,6 @@ class SettingsRepository(private val appContext: Context) {
     suspend fun setDefaultSort(order: SortOrder) =
         appContext.dataStore.edit { it[Keys.SORT] = order.name }
 
-    suspend fun setAutoHideDelay(ms: Long) =
-        appContext.dataStore.edit { it[Keys.AUTO_HIDE] = ms }
+    suspend fun setCategories(categories: List<String>) =
+        appContext.dataStore.edit { it[Keys.CATEGORIES] = TagCodec.encode(categories) }
 }
