@@ -28,8 +28,7 @@ import java.io.File
  *
  * Rendered page bitmaps are intentionally *not* held in this immutable state (that would
  * thrash recomposition on every render). Instead the screen pulls them on demand through the
- * suspend [getPage]/[getThumbnail] accessors, which are backed by an in-memory [BitmapCache]
- * plus an on-disk JPEG cache.
+ * suspend [getPage] accessor, backed by an in-memory [BitmapCache] plus an on-disk JPEG cache.
  */
 data class ViewerState(
     /** false → no PDF loaded yet; the screen shows only the centered "+" button. */
@@ -41,8 +40,8 @@ data class ViewerState(
     val isLoading: Boolean = false,
     /** One-shot flag: a brand-new catalog was just loaded (drives the snackbar). */
     val justLoadedNew: Boolean = false,
-    /** 0-based page index → one-word heading title; missing pages fall back to the number. */
-    val pageTitles: Map<Int, String> = emptyMap()
+    /** One short display name per page (size == [totalPages]); used by the capsule panel. */
+    val pageNames: List<String> = emptyList()
 )
 
 /**
@@ -68,7 +67,6 @@ class ViewerViewModel(
 
     private var document: PdfDocument? = null
     private val pageCache = BitmapCache()
-    private val thumbCache = BitmapCache(maxBytes = BitmapCache.defaultMaxBytes() / 4)
 
     private var viewportWidthPx = DEFAULT_RENDER_WIDTH
     private var viewportLocked = false
@@ -120,7 +118,6 @@ class ViewerViewModel(
         document?.close()
         document = doc
         pageCache.clear()
-        thumbCache.clear()
 
         val total = doc.pageCount
         // Render the first few pages up front so the viewer can show immediately.
@@ -135,20 +132,20 @@ class ViewerViewModel(
                 totalPages = total,
                 currentPage = 0,
                 justLoadedNew = isNew,
-                pageTitles = emptyMap()
+                pageNames = emptyList()
             )
         }
         startBackgroundRender(total)
-        startTitleExtraction(file, total)
+        startNameExtraction(file, total)
     }
 
-    /** Reads the text layer off the main thread and publishes one-word page titles. */
-    private fun startTitleExtraction(file: File, total: Int) {
+    /** Reads the text layer off the main thread and publishes per-page capsule names. */
+    private fun startNameExtraction(file: File, total: Int) {
         titlesJob?.cancel()
         titlesJob = viewModelScope.launch(Dispatchers.Default) {
-            val titles = runCatching { PdfTitleExtractor.extractTitles(file, total) }
-                .getOrDefault(emptyMap())
-            if (titles.isNotEmpty()) _state.update { it.copy(pageTitles = titles) }
+            val names = runCatching { PdfTextExtractor.extractPageNames(file, total) }
+                .getOrDefault(emptyList())
+            if (names.isNotEmpty()) _state.update { it.copy(pageNames = names) }
         }
     }
 
@@ -191,16 +188,6 @@ class ViewerViewModel(
         }
     }
 
-    /** Low-res thumbnail (≤ [THUMB_WIDTH_PX] wide) for the side index panel. */
-    suspend fun getThumbnail(page: Int): Bitmap? {
-        thumbCache.get(page)?.let { return it }
-        val doc = document ?: return null
-        return withContext(Dispatchers.IO) {
-            runCatching { doc.renderPageByWidth(page, THUMB_WIDTH_PX) }.getOrNull()
-                ?.also { thumbCache.put(page, it) }
-        }
-    }
-
     fun onPageSettled(page: Int) {
         _state.update { it.copy(currentPage = page) }
         // Keep the immediate neighbours warm so a page-curl never waits on I/O.
@@ -226,13 +213,11 @@ class ViewerViewModel(
         document?.close()
         document = null
         pageCache.clear()
-        thumbCache.clear()
     }
 
     companion object {
         private const val CURRENT_ID = "current"
         private const val EAGER_PAGES = 3
-        private const val THUMB_WIDTH_PX = 300
         private const val DEFAULT_RENDER_WIDTH = 1920
     }
 }
