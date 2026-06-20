@@ -5,8 +5,6 @@ package com.pharma.evisualaid.ui.viewer
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -28,12 +26,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -69,15 +66,18 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * The entire app UI: one landscape-locked, edge-to-edge immersive PDF viewer.
+ * Landscape-locked, edge-to-edge immersive PDF viewer for a single catalog opened from the
+ * dashboard.
  *
- *  - No PDF loaded  → black screen with a single centered "+" button.
  *  - Loading        → black screen with a teal spinner + "Preparing catalog…".
- *  - Loaded         → full-screen book-turn pager, a faint corner "+" to swap catalogs, and a
+ *  - Load failed    → black screen with a short message and a "Back" action.
+ *  - Loaded         → full-screen book-turn pager, a faint corner back button, and a
  *                     swipe-in side index panel.
  */
 @Composable
 fun ViewerScreen(
+    catalogId: String,
+    onExit: () -> Unit,
     viewModel: ViewerViewModel = viewModel(factory = AppViewModelProvider.Factory)
 ) {
     LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
@@ -85,16 +85,13 @@ fun ViewerScreen(
 
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    val pickPdf = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let(viewModel::importPdf) }
-    val openPicker = { pickPdf.launch(arrayOf("application/pdf")) }
+    LaunchedEffect(catalogId) { viewModel.open(catalogId) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         when {
-            state.isLoading -> LoadingState()
-            !state.isLoaded -> EmptyState(onUpload = openPicker)
-            else -> LoadedViewer(state = state, viewModel = viewModel, onUpload = openPicker)
+            state.loadFailed -> ErrorState(onExit = onExit)
+            !state.isLoaded -> LoadingState()
+            else -> LoadedViewer(state = state, viewModel = viewModel, onExit = onExit)
         }
     }
 }
@@ -103,15 +100,14 @@ fun ViewerScreen(
 private fun LoadedViewer(
     state: ViewerState,
     viewModel: ViewerViewModel,
-    onUpload: () -> Unit
+    onExit: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var currentPage by remember { mutableIntStateOf(0) }
+    var currentPage by remember { mutableIntStateOf(state.initialPage) }
     var panelOpen by remember { mutableStateOf(false) }
     var boxWidthPx by remember { mutableIntStateOf(0) }
     var panelDragging by remember { mutableStateOf(false) }
     var panelDragFraction by remember { mutableFloatStateOf(0f) }
-    val snackbarHost = remember { SnackbarHostState() }
 
     // Pre-decoded page bitmaps for the curl (current + both neighbours). On a completed turn we
     // swap these in place so the new page is on screen the same frame the curl finishes, with
@@ -120,21 +116,13 @@ private fun LoadedViewer(
     var nextPage by remember { mutableStateOf<Bitmap?>(null) }
     var prevPage by remember { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(state.filePath) { currentPage = 0 }
+    LaunchedEffect(state.filePath) { currentPage = state.initialPage }
 
     LaunchedEffect(currentPage, state.totalPages, state.filePath) {
         current = viewModel.getPage(currentPage)
         nextPage = if (currentPage + 1 < state.totalPages) viewModel.getPage(currentPage + 1) else null
         prevPage = if (currentPage - 1 >= 0) viewModel.getPage(currentPage - 1) else null
         viewModel.onPageSettled(currentPage)
-    }
-
-    // "New catalog loaded" toast after an import.
-    LaunchedEffect(state.justLoadedNew) {
-        if (state.justLoadedNew) {
-            snackbarHost.showSnackbar("New catalog loaded")
-            viewModel.consumeNewLoadedEvent()
-        }
     }
 
     BackHandler(enabled = panelOpen) { panelOpen = false }
@@ -186,12 +174,9 @@ private fun LoadedViewer(
             )
         }
 
-        // Faint, always-available "+" to swap the loaded catalog (top-left, no label/shadow).
-        PlusButton(
-            sizeDp = 44,
-            iconDp = 26,
-            idleAlpha = 0.35f,
-            onClick = onUpload,
+        // Faint, always-available back button to return to the dashboard (top-left).
+        BackButton(
+            onClick = onExit,
             modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
         )
 
@@ -278,51 +263,35 @@ private fun LoadedViewer(
                 modifier = Modifier.fillMaxSize()
             )
         }
-
-        SnackbarHost(
-            hostState = snackbarHost,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
-        )
     }
 }
 
-/** Borderless, shadowless teal "+" icon button whose opacity rises while pressed. */
+/** Borderless, shadowless teal back arrow whose opacity rises while pressed. */
 @Composable
-private fun PlusButton(
-    sizeDp: Int,
-    iconDp: Int,
-    idleAlpha: Float,
+private fun BackButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val targetAlpha by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (pressed) 1f else idleAlpha,
+    val targetAlpha by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0.35f,
         animationSpec = tween(150),
-        label = "plusAlpha"
+        label = "backAlpha"
     )
     Box(
         modifier = modifier
-            .size(sizeDp.dp)
+            .size(44.dp)
             .alpha(targetAlpha)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = Icons.Filled.Add,
-            contentDescription = "Load catalog",
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Back to catalogs",
             tint = PrimaryTeal,
-            modifier = Modifier.size(iconDp.dp)
+            modifier = Modifier.size(26.dp)
         )
-    }
-}
-
-/** First-launch state: nothing but a centered "+" on black. */
-@Composable
-private fun EmptyState(onUpload: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-        PlusButton(sizeDp = 56, iconDp = 32, idleAlpha = 1f, onClick = onUpload)
     }
 }
 
@@ -337,6 +306,22 @@ private fun LoadingState() {
                 fontSize = 14.sp,
                 modifier = Modifier.padding(top = 16.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun ErrorState(onExit: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "This catalog could not be opened.",
+                color = Color(0xFFE8EAF6),
+                fontSize = 16.sp
+            )
+            TextButton(onClick = onExit, modifier = Modifier.padding(top = 8.dp)) {
+                Text("Back to catalogs", color = PrimaryTeal)
+            }
         }
     }
 }

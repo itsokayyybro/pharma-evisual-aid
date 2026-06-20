@@ -3,10 +3,9 @@ package com.pharma.evisualaid.ui.viewer
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.pharma.evisualaid.data.prefs.SettingsRepository
+import com.pharma.evisualaid.data.repository.CatalogRepository
 import com.pharma.evisualaid.util.BitmapCache
 import com.pharma.evisualaid.util.FileUtils
 import com.pharma.evisualaid.util.PdfDocument
@@ -16,7 +15,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -24,22 +22,24 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * UI state for the single immersive viewer.
+ * UI state for the immersive viewer of a single catalog opened from the dashboard.
  *
  * Rendered page bitmaps are intentionally *not* held in this immutable state (that would
  * thrash recomposition on every render). Instead the screen pulls them on demand through the
  * suspend [getPage] accessor, backed by an in-memory [BitmapCache] plus an on-disk JPEG cache.
  */
 data class ViewerState(
-    /** false → no PDF loaded yet; the screen shows only the centered "+" button. */
+    /** false → nothing loaded yet (still resolving the catalog) or the catalog is missing. */
     val isLoaded: Boolean = false,
+    /** true while the catalog is being resolved/opened and the first pages are rendering. */
+    val isLoading: Boolean = true,
+    /** Set when the catalog could not be opened (deleted file / corrupt PDF). */
+    val loadFailed: Boolean = false,
     val filePath: String? = null,
     val totalPages: Int = 0,
     val currentPage: Int = 0,
-    /** true while pages 0–2 are being rendered after a fresh load. */
-    val isLoading: Boolean = false,
-    /** One-shot flag: a brand-new catalog was just loaded (drives the snackbar). */
-    val justLoadedNew: Boolean = false,
+    /** Page to resume on (last opened page); the screen jumps here once on open. */
+    val initialPage: Int = 0,
     /** One short display name per page (size == [totalPages]); used by the capsule panel. */
     val pageNames: List<String> = emptyList()
 )
@@ -50,14 +50,14 @@ data class ViewerState(
  *  - pages 0–2 render synchronously on load (blocks behind a spinner),
  *  - the rest stream to disk in the background ([Dispatchers.Default]),
  *  - recent full-res pages stay in an in-memory [BitmapCache] (bounded to ~¼ heap so mid-range
- *    tablets don't OOM — safer than a hard count of 20 full-resolution bitmaps),
- *  - everything else lives as JPEG under cacheDir/pages/ and is decoded on demand.
+ *    tablets don't OOM),
+ *  - everything else lives as JPEG under cacheDir/pages/<catalogId>/ and is decoded on demand.
  *
- * The single loaded PDF is remembered across launches via [SettingsRepository.currentPdfPath].
+ * The catalog to display is selected on the dashboard and passed in via [open].
  */
 class ViewerViewModel(
     app: Application,
-    private val settingsRepository: SettingsRepository
+    private val catalogRepository: CatalogRepository
 ) : ViewModel() {
 
     private val appContext = app.applicationContext
@@ -68,51 +68,41 @@ class ViewerViewModel(
     private var document: PdfDocument? = null
     private val pageCache = BitmapCache()
 
+    private var catalogId: String? = null
     private var viewportWidthPx = DEFAULT_RENDER_WIDTH
     private var viewportLocked = false
     private var backgroundJob: Job? = null
     private var titlesJob: Job? = null
 
-    init {
-        // Restore the last loaded PDF, if any, so subsequent launches skip straight in.
+    /** Resolve [catalogId] from the database and open its PDF. Idempotent per catalog. */
+    fun open(catalogId: String) {
+        if (this.catalogId == catalogId && _state.value.isLoaded) return
+        this.catalogId = catalogId
         viewModelScope.launch {
-            val path = settingsRepository.currentPdfPath.first()
-            val file = path?.let(::File)
-            if (file != null && file.exists()) {
-                open(file, isNew = false)
-            }
-        }
-    }
-
-    /** Picked a new PDF: copy into private storage, replace the current catalog, persist path. */
-    fun importPdf(uri: Uri) {
-        viewModelScope.launch {
-            _state.update { it.copy(isLoading = true) }
-            backgroundJob?.cancel()
-            titlesJob?.cancel()
-            // The current catalog always lives at the same path, so wipe its page cache first.
-            withContext(Dispatchers.IO) { clearDiskPages() }
-            val target = withContext(Dispatchers.IO) {
-                runCatching { FileUtils.copyUriToCatalogs(appContext, uri, CURRENT_ID) }.getOrNull()
-            }
-            if (target == null) {
-                _state.update { it.copy(isLoading = false) }
+            _state.update { it.copy(isLoading = true, loadFailed = false) }
+            val catalog = catalogRepository.getCatalog(catalogId)
+            val file = catalog?.filePath?.let(::File)
+            if (catalog == null || file == null || !file.exists()) {
+                _state.update {
+                    it.copy(isLoaded = false, isLoading = false, loadFailed = true)
+                }
                 return@launch
             }
-            settingsRepository.setCurrentPdfPath(target.absolutePath)
-            open(target, isNew = true)
+            open(file, catalog.lastOpenedPage ?: 0, catalog.pageCount)
         }
     }
 
-    private suspend fun open(file: File, isNew: Boolean) {
+    private suspend fun open(file: File, resumePage: Int, knownPageCount: Int) {
+        backgroundJob?.cancel()
+        titlesJob?.cancel()
         _state.update { it.copy(isLoading = true) }
         val doc = withContext(Dispatchers.IO) {
             runCatching { PdfDocument.open(file) }.getOrNull()
         }
         if (doc == null) {
-            // Corrupt/unsupported: forget it so we fall back to the "+" button.
-            settingsRepository.setCurrentPdfPath(null)
-            _state.update { it.copy(isLoaded = false, isLoading = false, filePath = null) }
+            _state.update {
+                it.copy(isLoaded = false, isLoading = false, loadFailed = true, filePath = null)
+            }
             return
         }
         document?.close()
@@ -120,18 +110,20 @@ class ViewerViewModel(
         pageCache.clear()
 
         val total = doc.pageCount
-        // Render the first few pages up front so the viewer can show immediately.
+        val start = resumePage.coerceIn(0, (total - 1).coerceAtLeast(0))
+        // Render the pages around the resume point up front so the viewer can show immediately.
         withContext(Dispatchers.IO) {
-            for (i in 0 until minOf(EAGER_PAGES, total)) getPage(i)
+            for (i in start until minOf(start + EAGER_PAGES, total)) getPage(i)
         }
         _state.update {
             it.copy(
                 isLoaded = true,
                 isLoading = false,
+                loadFailed = false,
                 filePath = file.absolutePath,
                 totalPages = total,
-                currentPage = 0,
-                justLoadedNew = isNew,
+                currentPage = start,
+                initialPage = start,
                 pageNames = emptyList()
             )
         }
@@ -153,7 +145,7 @@ class ViewerViewModel(
     private fun startBackgroundRender(total: Int) {
         backgroundJob?.cancel()
         backgroundJob = viewModelScope.launch(Dispatchers.Default) {
-            for (i in EAGER_PAGES until total) {
+            for (i in 0 until total) {
                 if (!isActive) break
                 val doc = document ?: break
                 if (pageFile(i).exists()) continue
@@ -190,6 +182,8 @@ class ViewerViewModel(
 
     fun onPageSettled(page: Int) {
         _state.update { it.copy(currentPage = page) }
+        // Persist progress so the dashboard's "Recent" filter and resume-on-open stay accurate.
+        catalogId?.let { id -> viewModelScope.launch { catalogRepository.recordOpened(id, page) } }
         // Keep the immediate neighbours warm so a page-curl never waits on I/O.
         val total = _state.value.totalPages
         listOf(page - 1, page + 1)
@@ -197,14 +191,10 @@ class ViewerViewModel(
             .forEach { neighbour -> viewModelScope.launch { getPage(neighbour) } }
     }
 
-    /** Acknowledge the "New catalog loaded" snackbar so it doesn't re-show on recomposition. */
-    fun consumeNewLoadedEvent() = _state.update { it.copy(justLoadedNew = false) }
+    private fun pagesDir(): File =
+        File(File(appContext.cacheDir, "pages"), catalogId ?: "current").apply { mkdirs() }
 
-    private fun pagesDir(): File = File(appContext.cacheDir, "pages").apply { mkdirs() }
     private fun pageFile(page: Int): File = File(pagesDir(), "$page.jpg")
-    private fun clearDiskPages() {
-        pagesDir().listFiles()?.forEach { it.delete() }
-    }
 
     override fun onCleared() {
         super.onCleared()
@@ -216,7 +206,6 @@ class ViewerViewModel(
     }
 
     companion object {
-        private const val CURRENT_ID = "current"
         private const val EAGER_PAGES = 3
         private const val DEFAULT_RENDER_WIDTH = 1920
     }

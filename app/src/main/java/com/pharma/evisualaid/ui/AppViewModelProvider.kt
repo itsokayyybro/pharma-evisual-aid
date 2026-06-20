@@ -5,6 +5,8 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.pharma.evisualaid.EVisualAidApp
+import com.pharma.evisualaid.ui.home.HomeViewModel
+import com.pharma.evisualaid.ui.settings.SettingsViewModel
 import com.pharma.evisualaid.ui.viewer.ViewerViewModel
 
 /** Manual DI: builds ViewModels from the application's [EVisualAidApp.container]. */
@@ -13,7 +15,23 @@ object AppViewModelProvider {
     val Factory = viewModelFactory {
         initializer {
             val app = evApp()
-            ViewerViewModel(app, app.container.settingsRepository)
+            HomeViewModel(
+                app,
+                app.container.catalogRepository,
+                app.container.settingsRepository
+            )
+        }
+        initializer {
+            val app = evApp()
+            SettingsViewModel(
+                app,
+                app.container.settingsRepository,
+                app.container.catalogRepository
+            )
+        }
+        initializer {
+            val app = evApp()
+            ViewerViewModel(app, app.container.catalogRepository)
         }
     }
 
