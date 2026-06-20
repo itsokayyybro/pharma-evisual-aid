@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 import android.graphics.Matrix as AndroidMatrix
@@ -171,8 +172,27 @@ fun PageCurlCanvas(
                             zoom.apply(1f, change.positionChange(), size)
                         } else if (curl.active) {
                             velocity.addPosition(change.uptimeMillis, change.position)
-                            // Track finger while maintaining the initial relative offset.
-                            curl.touch = change.position - grabOffset
+                            val rawTouch = change.position - grabOffset
+                            
+                            // Prevent vertical slides along the edge from triggering the curl (avoids geometry glitches).
+                            // We require a minimum horizontal pull before allowing any vertical influence.
+                            val dx = abs(rawTouch.x - curl.corner.x)
+                            val horizontalThreshold = 10.dp.toPx()
+                            
+                            if (dx < horizontalThreshold) {
+                                curl.touch = curl.corner
+                            } else {
+                                val dy = rawTouch.y - curl.corner.y
+                                // Gradually introduce vertical movement to keep the turn smooth and stable.
+                                val verticalDamping = ((dx - horizontalThreshold) / 50.dp.toPx()).coerceIn(0f, 1f)
+                                val constrainedY = curl.corner.y + (dy * verticalDamping)
+
+                                curl.touch = if (curl.direction == CurlDirection.FORWARD) {
+                                    Offset(rawTouch.x.coerceAtMost(curl.corner.x), constrainedY)
+                                } else {
+                                    Offset(rawTouch.x.coerceAtLeast(curl.corner.x), constrainedY)
+                                }
+                            }
                         }
                     },
                     onDragEnd = {
@@ -232,11 +252,11 @@ private suspend fun releaseCurl(
     curl.dragging = false
     val anim = Animatable(0f)
     val spec = if (fast) {
-        tween<Float>(180)
+        tween<Float>(160)
     } else {
         spring(
-            dampingRatio = 0.9f, 
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = Spring.DampingRatioNoBouncy, 
+            stiffness = Spring.StiffnessMedium
         )
     }
     
@@ -274,8 +294,17 @@ private fun DrawScope.drawScene(
 
     val corner = curl.corner
     val touch = curl.touch
-    val below = if (curl.direction == CurlDirection.FORWARD) next else previous
     
+    // Safety guard: if no progress is made, render flat to avoid geometry glitches.
+    val progress = CurlGeometry.progress(corner, touch, page)
+    if (progress < 0.005f) {
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawBitmap(current, base, bitmapPaint)
+        }
+        return
+    }
+
+    val below = if (curl.direction == CurlDirection.FORWARD) next else previous
     val flap = CurlGeometry.flapPath(corner, touch, page)
     val visible = CurlGeometry.visiblePath(corner, touch, page)
     val reflected = CurlGeometry.reflectedFlapPath(corner, touch, page)
@@ -310,7 +339,7 @@ private fun DrawScope.drawScene(
         // Soft crease shadow on the current page.
         shadowPaint.shader = LinearGradient(
             foldMid.x, foldMid.y, touch.x, touch.y,
-            0x26000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
+            0x22000000.toInt(), 0x00000000, Shader.TileMode.CLAMP
         )
         nc.drawPaint(shadowPaint)
         shadowPaint.shader = null
