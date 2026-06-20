@@ -254,7 +254,7 @@ private fun LoadedViewer(
                 pageCount = state.totalPages,
                 currentPage = currentPage,
                 accent = PrimaryTeal,
-                pageNames = state.pageNames,
+                thumbnailFor = viewModel::getThumbnail,
                 isOpen = panelOpen,
                 onSelectPage = { page ->
                     panelOpen = false

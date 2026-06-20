@@ -9,7 +9,6 @@ import com.pharma.evisualaid.data.repository.CatalogRepository
 import com.pharma.evisualaid.util.BitmapCache
 import com.pharma.evisualaid.util.FileUtils
 import com.pharma.evisualaid.util.PdfDocument
-import com.pharma.evisualaid.util.PdfTextExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,9 +38,7 @@ data class ViewerState(
     val totalPages: Int = 0,
     val currentPage: Int = 0,
     /** Page to resume on (last opened page); the screen jumps here once on open. */
-    val initialPage: Int = 0,
-    /** One short display name per page (size == [totalPages]); used by the capsule panel. */
-    val pageNames: List<String> = emptyList()
+    val initialPage: Int = 0
 )
 
 /**
@@ -67,12 +64,13 @@ class ViewerViewModel(
 
     private var document: PdfDocument? = null
     private val pageCache = BitmapCache()
+    // Small, separate cache for the navigation-rail page previews (see [getThumbnail]).
+    private val thumbCache = BitmapCache(THUMB_CACHE_BYTES)
 
     private var catalogId: String? = null
     private var viewportWidthPx = DEFAULT_RENDER_WIDTH
     private var viewportLocked = false
     private var backgroundJob: Job? = null
-    private var titlesJob: Job? = null
 
     /** Resolve [catalogId] from the database and open its PDF. Idempotent per catalog. */
     fun open(catalogId: String) {
@@ -88,13 +86,12 @@ class ViewerViewModel(
                 }
                 return@launch
             }
-            open(file, catalog.lastOpenedPage ?: 0, catalog.pageCount)
+            open(file, catalog.lastOpenedPage ?: 0)
         }
     }
 
-    private suspend fun open(file: File, resumePage: Int, knownPageCount: Int) {
+    private suspend fun open(file: File, resumePage: Int) {
         backgroundJob?.cancel()
-        titlesJob?.cancel()
         _state.update { it.copy(isLoading = true) }
         val doc = withContext(Dispatchers.IO) {
             runCatching { PdfDocument.open(file) }.getOrNull()
@@ -108,6 +105,7 @@ class ViewerViewModel(
         document?.close()
         document = doc
         pageCache.clear()
+        thumbCache.clear()
 
         val total = doc.pageCount
         val start = resumePage.coerceIn(0, (total - 1).coerceAtLeast(0))
@@ -123,22 +121,10 @@ class ViewerViewModel(
                 filePath = file.absolutePath,
                 totalPages = total,
                 currentPage = start,
-                initialPage = start,
-                pageNames = emptyList()
+                initialPage = start
             )
         }
         startBackgroundRender(total)
-        startNameExtraction(file, total)
-    }
-
-    /** Reads the text layer off the main thread and publishes per-page capsule names. */
-    private fun startNameExtraction(file: File, total: Int) {
-        titlesJob?.cancel()
-        titlesJob = viewModelScope.launch(Dispatchers.Default) {
-            val names = runCatching { PdfTextExtractor.extractPageNames(file, total) }
-                .getOrDefault(emptyList())
-            if (names.isNotEmpty()) _state.update { it.copy(pageNames = names) }
-        }
     }
 
     /** Streams the remaining pages to the on-disk JPEG cache without blocking the UI. */
@@ -180,6 +166,26 @@ class ViewerViewModel(
         }
     }
 
+    /**
+     * Small preview bitmap for [page], used by the navigation rail: memory cache → disk JPEG →
+     * render at [THUMB_WIDTH] (then cache both). Kept separate from [getPage] so scrolling the
+     * rail never evicts the full-resolution pages the curl is using.
+     */
+    suspend fun getThumbnail(page: Int): Bitmap? {
+        thumbCache.get(page)?.let { return it }
+        val doc = document ?: return null
+        return withContext(Dispatchers.IO) {
+            thumbCache.get(page)?.let { return@withContext it }
+            val file = thumbFile(page)
+            val bitmap = (if (file.exists()) {
+                runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+            } else null)
+                ?: runCatching { doc.renderPageByWidth(page, THUMB_WIDTH) }.getOrNull()
+                    ?.also { runCatching { FileUtils.saveBitmapAsJpeg(it, file) } }
+            bitmap?.also { thumbCache.put(page, it) }
+        }
+    }
+
     fun onPageSettled(page: Int) {
         _state.update { it.copy(currentPage = page) }
         // Persist progress so the dashboard's "Recent" filter and resume-on-open stay accurate.
@@ -196,17 +202,26 @@ class ViewerViewModel(
 
     private fun pageFile(page: Int): File = File(pagesDir(), "$page.jpg")
 
+    private fun thumbsDir(): File =
+        File(File(appContext.cacheDir, "thumbs"), catalogId ?: "current").apply { mkdirs() }
+
+    private fun thumbFile(page: Int): File = File(thumbsDir(), "$page.jpg")
+
     override fun onCleared() {
         super.onCleared()
         backgroundJob?.cancel()
-        titlesJob?.cancel()
         document?.close()
         document = null
         pageCache.clear()
+        thumbCache.clear()
     }
 
     companion object {
         private const val EAGER_PAGES = 3
         private const val DEFAULT_RENDER_WIDTH = 1920
+        /** Render width for the navigation-rail previews — small, for a clean compact look. */
+        private const val THUMB_WIDTH = 240
+        /** ~24 MB ceiling for the in-memory preview cache (LRU-evicted beyond that). */
+        private const val THUMB_CACHE_BYTES = 24 * 1024 * 1024
     }
 }
