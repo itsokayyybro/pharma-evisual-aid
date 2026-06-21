@@ -11,11 +11,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -24,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,11 +65,6 @@ import kotlin.math.roundToInt
 /**
  * Landscape-locked, edge-to-edge immersive PDF viewer for a single catalog opened from the
  * dashboard.
- *
- *  - Loading        → black screen with a teal spinner + "Preparing catalog…".
- *  - Load failed    → black screen with a short message and a "Back" action.
- *  - Loaded         → full-screen book-turn pager, a faint corner back button, and a
- *                     swipe-in side index panel.
  */
 @Composable
 fun ViewerScreen(
@@ -106,12 +98,7 @@ private fun LoadedViewer(
     var currentPage by remember { mutableIntStateOf(state.initialPage) }
     var panelOpen by remember { mutableStateOf(false) }
     var boxWidthPx by remember { mutableIntStateOf(0) }
-    var panelDragging by remember { mutableStateOf(false) }
-    var panelDragFraction by remember { mutableFloatStateOf(0f) }
 
-    // Pre-decoded page bitmaps for the curl (current + both neighbours). On a completed turn we
-    // swap these in place so the new page is on screen the same frame the curl finishes, with
-    // no reload flash; the loader below then refreshes the now-stale neighbour.
     var current by remember { mutableStateOf<Bitmap?>(null) }
     var nextPage by remember { mutableStateOf<Bitmap?>(null) }
     var prevPage by remember { mutableStateOf<Bitmap?>(null) }
@@ -127,7 +114,6 @@ private fun LoadedViewer(
 
     BackHandler(enabled = panelOpen) { panelOpen = false }
 
-    // Near jumps (≤3) flip through pages quickly; far jumps cut straight there (crossfade).
     fun jumpTo(target: Int) {
         val safe = target.coerceIn(0, state.totalPages - 1)
         if (abs(safe - currentPage) <= 3) {
@@ -147,7 +133,10 @@ private fun LoadedViewer(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .onSizeChanged { viewModel.setViewportWidth(it.width); boxWidthPx = it.width }
+            .onSizeChanged { 
+                viewModel.setViewportSize(it.width, it.height)
+                boxWidthPx = it.width 
+            }
     ) {
         val bmp = current
         if (bmp == null) {
@@ -170,46 +159,21 @@ private fun LoadedViewer(
                     currentPage--
                 },
                 onTap = { if (panelOpen) panelOpen = false },
+                onDoubleTap = { offset ->
+                    // Open panel ONLY if double-tapped on the right half of the screen
+                    if (offset.x > boxWidthPx / 2f) {
+                        panelOpen = true
+                    }
+                },
                 modifier = Modifier.fillMaxSize()
             )
         }
 
-        // Faint, always-available back button to return to the dashboard (top-left).
         BackButton(
             onClick = onExit,
             modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
         )
 
-        // Right-edge trigger zone (32dp): tap to open, or drag left to reveal progressively.
-        val panelWidthPx = boxWidthPx * 0.26f
-        Box(
-            Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .width(32.dp)
-                .pointerInput(boxWidthPx) {
-                    val stripPx = 32.dp.toPx()
-                    detectDragGestures(
-                        onDragStart = { panelDragging = true; panelDragFraction = 0f },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            if (panelWidthPx > 0f) {
-                                panelDragFraction =
-                                    ((stripPx - change.position.x) / panelWidthPx).coerceIn(0f, 1f)
-                            }
-                        },
-                        onDragEnd = {
-                            panelOpen = panelDragFraction > 0.3f
-                            panelDragging = false
-                            panelDragFraction = 0f
-                        },
-                        onDragCancel = { panelDragging = false; panelDragFraction = 0f }
-                    )
-                }
-                .pointerInput(Unit) { detectTapGestures { panelOpen = true } }
-        )
-
-        // Tapping the visible catalog (anywhere outside the panel) closes it.
         if (panelOpen) {
             Box(
                 Modifier
@@ -221,7 +185,7 @@ private fun LoadedViewer(
             )
         }
 
-        // The capsule panel — always composed, slid off-screen to the right when closed.
+        val panelWidthPx = boxWidthPx * 0.26f
         val animOffset by animateFloatAsState(
             targetValue = if (panelOpen) 0f else panelWidthPx,
             animationSpec = spring(
@@ -230,14 +194,13 @@ private fun LoadedViewer(
             ),
             label = "panelOffset"
         )
-        val offsetX = if (panelDragging) panelWidthPx * (1f - panelDragFraction) else animOffset
+        
         Box(
             Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxWidth(0.26f)
                 .fillMaxHeight()
-                .offset { IntOffset(offsetX.roundToInt(), 0) }
-                // Drag the panel rightward to dismiss.
+                .offset { IntOffset(animOffset.roundToInt(), 0) }
                 .pointerInput(Unit) {
                     var total = 0f
                     detectHorizontalDragGestures(
@@ -266,7 +229,6 @@ private fun LoadedViewer(
     }
 }
 
-/** Borderless, shadowless teal back arrow whose opacity rises while pressed. */
 @Composable
 private fun BackButton(
     onClick: () -> Unit,

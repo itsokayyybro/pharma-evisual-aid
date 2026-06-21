@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.min
 import android.graphics.Matrix as AndroidMatrix
 
 /**
@@ -59,10 +58,6 @@ class ZoomState {
     fun apply(zoomChange: Float, panChange: Offset, bounds: IntSize) {
         scale = (scale * zoomChange).coerceIn(1f, 4f)
         offset = clamp(offset + panChange, bounds)
-    }
-
-    fun toggleDoubleTap() {
-        if (scale > 1.05f) reset() else scale = 2.5f
     }
 
     fun reset() {
@@ -95,6 +90,7 @@ fun PageCurlCanvas(
     onPageAdvanced: () -> Unit,
     onPageRetreated: () -> Unit,
     onTap: () -> Unit,
+    onDoubleTap: (Offset) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val curl = rememberCurlState()
@@ -114,7 +110,9 @@ fun PageCurlCanvas(
             .pointerInput(currentPageBitmap) {
                 detectTapGestures(
                     onTap = { onTap() },
-                    onDoubleTap = { if (!curl.active) zoom.toggleDoubleTap() }
+                    onDoubleTap = { offset -> 
+                        if (!curl.active) onDoubleTap(offset) 
+                    }
                 )
             }
             .pointerInput(currentPageBitmap) {
@@ -142,7 +140,7 @@ fun PageCurlCanvas(
                             return@detectDragGestures
                         }
                         panning = false
-                        val page = fitRect(currentPageBitmap, size.width.toFloat(), size.height.toFloat())
+                        val page = Rect(0f, 0f, size.width.toFloat(), size.height.toFloat())
                         
                         // Pick the edge closest to the touch.
                         val isForward = start.x > size.width / 2f
@@ -175,7 +173,6 @@ fun PageCurlCanvas(
                             val rawTouch = change.position - grabOffset
                             
                             // Prevent vertical slides along the edge from triggering the curl (avoids geometry glitches).
-                            // We require a minimum horizontal pull before allowing any vertical influence.
                             val dx = abs(rawTouch.x - curl.corner.x)
                             val horizontalThreshold = 10.dp.toPx()
                             
@@ -183,7 +180,6 @@ fun PageCurlCanvas(
                                 curl.touch = curl.corner
                             } else {
                                 val dy = rawTouch.y - curl.corner.y
-                                // Gradually introduce vertical movement to keep the turn smooth and stable.
                                 val verticalDamping = ((dx - horizontalThreshold) / 50.dp.toPx()).coerceIn(0f, 1f)
                                 val constrainedY = curl.corner.y + (dy * verticalDamping)
 
@@ -197,11 +193,10 @@ fun PageCurlCanvas(
                     },
                     onDragEnd = {
                         if (!panning && curl.active) {
-                            val page = fitRect(currentPageBitmap, size.width.toFloat(), size.height.toFloat())
+                            val page = Rect(0f, 0f, size.width.toFloat(), size.height.toFloat())
                             val speed = velocity.calculateVelocity().let { hypot(it.x.toDouble(), it.y.toDouble()) }
                             val fast = speed > 1200.dp.toPx()
                             val progress = CurlGeometry.progress(curl.corner, curl.touch, page)
-                            // Responsive threshold: complete if past 35% or fast swipe.
                             val complete = fast || progress > 0.35f
                             scope.launch {
                                 releaseCurl(curl, page, complete, fast) {
@@ -214,7 +209,7 @@ fun PageCurlCanvas(
                     },
                     onDragCancel = {
                         if (!panning && curl.active) {
-                            val page = fitRect(currentPageBitmap, size.width.toFloat(), size.height.toFloat())
+                            val page = Rect(0f, 0f, size.width.toFloat(), size.height.toFloat())
                             scope.launch { releaseCurl(curl, page, complete = false, fast = false) {} }
                         }
                         panning = false
@@ -235,7 +230,6 @@ fun PageCurlCanvas(
     }
 }
 
-/** Interpolates the touch point to its final resting place (either edge). */
 private suspend fun releaseCurl(
     curl: CurlState,
     page: Rect,
@@ -277,8 +271,9 @@ private fun DrawScope.drawScene(
 ) {
     val w = size.width
     val h = size.height
-    val base = fitMatrix(current, w, h)
-    val page = fitRect(current, w, h)
+    // Fill full screen by stretching to match viewport size exactly.
+    val base = fullMatrix(current, w, h)
+    val page = Rect(0f, 0f, w, h)
 
     if (!curl.active) {
         drawIntoCanvas { canvas ->
@@ -295,7 +290,6 @@ private fun DrawScope.drawScene(
     val corner = curl.corner
     val touch = curl.touch
     
-    // Safety guard: if no progress is made, render flat to avoid geometry glitches.
     val progress = CurlGeometry.progress(corner, touch, page)
     if (progress < 0.005f) {
         drawIntoCanvas { canvas ->
@@ -315,7 +309,7 @@ private fun DrawScope.drawScene(
 
         // 1 — Bottom: The page underneath.
         if (below != null) {
-            nc.drawBitmap(below, fitMatrix(below, w, h), bitmapPaint)
+            nc.drawBitmap(below, fullMatrix(below, w, h), bitmapPaint)
         } else {
             nc.drawColor(android.graphics.Color.BLACK)
         }
@@ -370,21 +364,8 @@ private fun DrawScope.drawScene(
     }
 }
 
-private fun fitMatrix(bmp: Bitmap, w: Float, h: Float): AndroidMatrix {
-    val s = min(w / bmp.width, h / bmp.height)
-    val dw = bmp.width * s
-    val dh = bmp.height * s
+private fun fullMatrix(bmp: Bitmap, w: Float, h: Float): AndroidMatrix {
     return AndroidMatrix().apply {
-        setScale(s, s)
-        postTranslate((w - dw) / 2f, (h - dh) / 2f)
+        setScale(w / bmp.width.toFloat(), h / bmp.height.toFloat())
     }
-}
-
-private fun fitRect(bmp: Bitmap, w: Float, h: Float): Rect {
-    val s = min(w / bmp.width, h / bmp.height)
-    val dw = bmp.width * s
-    val dh = bmp.height * s
-    val left = (w - dw) / 2f
-    val top = (h - dh) / 2f
-    return Rect(left, top, left + dw, top + dh)
 }

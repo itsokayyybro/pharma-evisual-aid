@@ -69,6 +69,7 @@ class ViewerViewModel(
 
     private var catalogId: String? = null
     private var viewportWidthPx = DEFAULT_RENDER_WIDTH
+    private var viewportHeightPx = DEFAULT_RENDER_HEIGHT
     private var viewportLocked = false
     private var backgroundJob: Job? = null
 
@@ -135,18 +136,19 @@ class ViewerViewModel(
                 if (!isActive) break
                 val doc = document ?: break
                 if (pageFile(i).exists()) continue
-                runCatching { doc.renderPageByWidth(i, viewportWidthPx) }.getOrNull()?.let { bmp ->
+                runCatching { doc.renderPageToSize(i, viewportWidthPx, viewportHeightPx) }.getOrNull()?.let { bmp ->
                     runCatching { FileUtils.saveBitmapAsJpeg(bmp, pageFile(i)) }
                 }
             }
         }
     }
 
-    /** Locks the render width to the real screen width the first time the viewer is measured. */
-    fun setViewportWidth(px: Int) {
-        if (px > 0 && !viewportLocked) {
+    /** Locks the render dimensions to the real screen dimensions the first time the viewer is measured. */
+    fun setViewportSize(width: Int, height: Int) {
+        if (width > 0 && height > 0 && !viewportLocked) {
             viewportLocked = true
-            viewportWidthPx = px
+            viewportWidthPx = width
+            viewportHeightPx = height
         }
     }
 
@@ -160,7 +162,7 @@ class ViewerViewModel(
             val bitmap = (if (file.exists()) {
                 runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             } else null)
-                ?: runCatching { doc.renderPageByWidth(page, viewportWidthPx) }.getOrNull()
+                ?: runCatching { doc.renderPageToSize(page, viewportWidthPx, viewportHeightPx) }.getOrNull()
                     ?.also { runCatching { FileUtils.saveBitmapAsJpeg(it, file) } }
             bitmap?.also { pageCache.put(page, it) }
         }
@@ -219,6 +221,7 @@ class ViewerViewModel(
     companion object {
         private const val EAGER_PAGES = 3
         private const val DEFAULT_RENDER_WIDTH = 1920
+        private const val DEFAULT_RENDER_HEIGHT = 1080
         /** Render width for the navigation-rail previews — small, for a clean compact look. */
         private const val THUMB_WIDTH = 240
         /** ~24 MB ceiling for the in-memory preview cache (LRU-evicted beyond that). */

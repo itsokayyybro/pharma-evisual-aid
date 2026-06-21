@@ -62,6 +62,17 @@ class PdfDocument private constructor(
         }
     }
 
+    /**
+     * Renders [index] to a bitmap exactly [width] x [height]. This may stretch the page if
+     * the requested aspect ratio differs from the PDF page aspect ratio.
+     */
+    fun renderPageToSize(index: Int, width: Int, height: Int): Bitmap = synchronized(lock) {
+        check(!closed) { "PdfDocument already closed" }
+        renderer.openPage(index).use { page ->
+            renderToBitmap(page, width.coerceAtLeast(1), height.coerceAtLeast(1))
+        }
+    }
+
     /** Renders [index] scaled to fit inside the given box, preserving aspect ratio. */
     fun renderPageFitting(index: Int, maxWidthPx: Int, maxHeightPx: Int): Bitmap =
         synchronized(lock) {
