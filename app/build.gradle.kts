@@ -108,6 +108,9 @@ dependencies {
     // index panel. Rendering still uses the native PdfRenderer; this is text-only.
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
+    // Google AI SDK (Gemini)
+    implementation("com.google.ai.client.generativeai:generativeai:0.7.0")
+
     // Debug tooling
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

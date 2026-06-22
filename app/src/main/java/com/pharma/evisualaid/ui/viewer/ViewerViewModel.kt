@@ -3,9 +3,11 @@ package com.pharma.evisualaid.ui.viewer
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pharma.evisualaid.data.repository.CatalogRepository
+import com.pharma.evisualaid.util.AiDescriber
 import com.pharma.evisualaid.util.BitmapCache
 import com.pharma.evisualaid.util.FileUtils
 import com.pharma.evisualaid.util.PdfDocument
@@ -20,51 +22,30 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/**
- * UI state for the immersive viewer of a single catalog opened from the dashboard.
- *
- * Rendered page bitmaps are intentionally *not* held in this immutable state (that would
- * thrash recomposition on every render). Instead the screen pulls them on demand through the
- * suspend [getPage] accessor, backed by an in-memory [BitmapCache] plus an on-disk JPEG cache.
- */
 data class ViewerState(
-    /** false → nothing loaded yet (still resolving the catalog) or the catalog is missing. */
     val isLoaded: Boolean = false,
-    /** true while the catalog is being resolved/opened and the first pages are rendering. */
     val isLoading: Boolean = true,
-    /** Set when the catalog could not be opened (deleted file / corrupt PDF). */
     val loadFailed: Boolean = false,
     val filePath: String? = null,
     val totalPages: Int = 0,
     val currentPage: Int = 0,
-    /** Page to resume on (last opened page); the screen jumps here once on open. */
-    val initialPage: Int = 0
+    val initialPage: Int = 0,
+    val isDescribing: Boolean = false,
+    val currentDescription: String? = null,
+    val statusMessage: String? = null
 )
 
-/**
- * Owns the open [PdfDocument] and the page-rendering pipeline for the immersive viewer:
- *
- *  - pages 0–2 render synchronously on load (blocks behind a spinner),
- *  - the rest stream to disk in the background ([Dispatchers.Default]),
- *  - recent full-res pages stay in an in-memory [BitmapCache] (bounded to ~¼ heap so mid-range
- *    tablets don't OOM),
- *  - everything else lives as JPEG under cacheDir/pages/<catalogId>/ and is decoded on demand.
- *
- * The catalog to display is selected on the dashboard and passed in via [open].
- */
 class ViewerViewModel(
     app: Application,
     private val catalogRepository: CatalogRepository
 ) : ViewModel() {
 
     private val appContext = app.applicationContext
-
     private val _state = MutableStateFlow(ViewerState())
     val state: StateFlow<ViewerState> = _state.asStateFlow()
 
     private var document: PdfDocument? = null
     private val pageCache = BitmapCache()
-    // Small, separate cache for the navigation-rail page previews (see [getThumbnail]).
     private val thumbCache = BitmapCache(THUMB_CACHE_BYTES)
 
     private var catalogId: String? = null
@@ -73,7 +54,6 @@ class ViewerViewModel(
     private var viewportLocked = false
     private var backgroundJob: Job? = null
 
-    /** Resolve [catalogId] from the database and open its PDF. Idempotent per catalog. */
     fun open(catalogId: String) {
         if (this.catalogId == catalogId && _state.value.isLoaded) return
         this.catalogId = catalogId
@@ -82,9 +62,7 @@ class ViewerViewModel(
             val catalog = catalogRepository.getCatalog(catalogId)
             val file = catalog?.filePath?.let(::File)
             if (catalog == null || file == null || !file.exists()) {
-                _state.update {
-                    it.copy(isLoaded = false, isLoading = false, loadFailed = true)
-                }
+                _state.update { it.copy(isLoaded = false, isLoading = false, loadFailed = true) }
                 return@launch
             }
             open(file, catalog.lastOpenedPage ?: 0)
@@ -98,9 +76,7 @@ class ViewerViewModel(
             runCatching { PdfDocument.open(file) }.getOrNull()
         }
         if (doc == null) {
-            _state.update {
-                it.copy(isLoaded = false, isLoading = false, loadFailed = true, filePath = null)
-            }
+            _state.update { it.copy(isLoaded = false, isLoading = false, loadFailed = true, filePath = null) }
             return
         }
         document?.close()
@@ -110,7 +86,6 @@ class ViewerViewModel(
 
         val total = doc.pageCount
         val start = resumePage.coerceIn(0, (total - 1).coerceAtLeast(0))
-        // Render the pages around the resume point up front so the viewer can show immediately.
         withContext(Dispatchers.IO) {
             for (i in start until minOf(start + EAGER_PAGES, total)) getPage(i)
         }
@@ -128,7 +103,6 @@ class ViewerViewModel(
         startBackgroundRender(total)
     }
 
-    /** Streams the remaining pages to the on-disk JPEG cache without blocking the UI. */
     private fun startBackgroundRender(total: Int) {
         backgroundJob?.cancel()
         backgroundJob = viewModelScope.launch(Dispatchers.Default) {
@@ -143,7 +117,6 @@ class ViewerViewModel(
         }
     }
 
-    /** Locks the render dimensions to the real screen dimensions the first time the viewer is measured. */
     fun setViewportSize(width: Int, height: Int) {
         if (width > 0 && height > 0 && !viewportLocked) {
             viewportLocked = true
@@ -152,7 +125,6 @@ class ViewerViewModel(
         }
     }
 
-    /** Full-resolution bitmap for [page]: memory cache → disk JPEG → render (then cache both). */
     suspend fun getPage(page: Int): Bitmap? {
         pageCache.get(page)?.let { return it }
         val doc = document ?: return null
@@ -168,11 +140,6 @@ class ViewerViewModel(
         }
     }
 
-    /**
-     * Small preview bitmap for [page], used by the navigation rail: memory cache → disk JPEG →
-     * render at [THUMB_WIDTH] (then cache both). Kept separate from [getPage] so scrolling the
-     * rail never evicts the full-resolution pages the curl is using.
-     */
     suspend fun getThumbnail(page: Int): Bitmap? {
         thumbCache.get(page)?.let { return it }
         val doc = document ?: return null
@@ -189,14 +156,31 @@ class ViewerViewModel(
     }
 
     fun onPageSettled(page: Int) {
-        _state.update { it.copy(currentPage = page) }
-        // Persist progress so the dashboard's "Recent" filter and resume-on-open stay accurate.
+        _state.update { it.copy(currentPage = page, currentDescription = null, statusMessage = null) }
         catalogId?.let { id -> viewModelScope.launch { catalogRepository.recordOpened(id, page) } }
-        // Keep the immediate neighbours warm so a page-curl never waits on I/O.
         val total = _state.value.totalPages
         listOf(page - 1, page + 1)
             .filter { it in 0 until total }
             .forEach { neighbour -> viewModelScope.launch { getPage(neighbour) } }
+    }
+
+    fun describeCurrentPage(bitmap: Bitmap) {
+        if (_state.value.isDescribing) return
+        _state.update { it.copy(isDescribing = true, statusMessage = "AI is thinking...") }
+        
+        viewModelScope.launch {
+            try {
+                val desc = AiDescriber.describePage(bitmap)
+                _state.update { it.copy(isDescribing = false, currentDescription = desc, statusMessage = null) }
+            } catch (e: Exception) {
+                Log.e("ViewerVM", "AI Error", e)
+                _state.update { it.copy(isDescribing = false, statusMessage = "AI Error: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun clearDescription() {
+        _state.update { it.copy(currentDescription = null, statusMessage = null) }
     }
 
     private fun pagesDir(): File =
@@ -222,9 +206,7 @@ class ViewerViewModel(
         private const val EAGER_PAGES = 3
         private const val DEFAULT_RENDER_WIDTH = 1920
         private const val DEFAULT_RENDER_HEIGHT = 1080
-        /** Render width for the navigation-rail previews — small, for a clean compact look. */
         private const val THUMB_WIDTH = 240
-        /** ~24 MB ceiling for the in-memory preview cache (LRU-evicted beyond that). */
         private const val THUMB_CACHE_BYTES = 24 * 1024 * 1024
     }
 }

@@ -4,11 +4,16 @@ package com.pharma.evisualaid.ui.viewer
 
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -16,23 +21,30 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -57,15 +70,12 @@ import com.pharma.evisualaid.ui.AppViewModelProvider
 import com.pharma.evisualaid.ui.theme.PrimaryTeal
 import com.pharma.evisualaid.ui.util.LockScreenOrientation
 import com.pharma.evisualaid.ui.util.findActivity
+import com.pharma.evisualaid.util.VoiceAssistant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/**
- * Landscape-locked, edge-to-edge immersive PDF viewer for a single catalog opened from the
- * dashboard.
- */
 @Composable
 fun ViewerScreen(
     catalogId: String,
@@ -94,6 +104,7 @@ private fun LoadedViewer(
     viewModel: ViewerViewModel,
     onExit: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var currentPage by remember { mutableIntStateOf(state.initialPage) }
     var panelOpen by remember { mutableStateOf(false) }
@@ -103,6 +114,11 @@ private fun LoadedViewer(
     var nextPage by remember { mutableStateOf<Bitmap?>(null) }
     var prevPage by remember { mutableStateOf<Bitmap?>(null) }
 
+    val voiceAssistant = remember { VoiceAssistant(context) }
+    DisposableEffect(Unit) {
+        onDispose { voiceAssistant.shutdown() }
+    }
+
     LaunchedEffect(state.filePath) { currentPage = state.initialPage }
 
     LaunchedEffect(currentPage, state.totalPages, state.filePath) {
@@ -110,6 +126,14 @@ private fun LoadedViewer(
         nextPage = if (currentPage + 1 < state.totalPages) viewModel.getPage(currentPage + 1) else null
         prevPage = if (currentPage - 1 >= 0) viewModel.getPage(currentPage - 1) else null
         viewModel.onPageSettled(currentPage)
+        voiceAssistant.stop()
+        viewModel.clearDescription()
+    }
+
+    LaunchedEffect(state.currentDescription) {
+        state.currentDescription?.let { desc ->
+            voiceAssistant.speak(desc)
+        }
     }
 
     BackHandler(enabled = panelOpen) { panelOpen = false }
@@ -160,7 +184,6 @@ private fun LoadedViewer(
                 },
                 onTap = { if (panelOpen) panelOpen = false },
                 onDoubleTap = { offset ->
-                    // Open panel ONLY if double-tapped on the right half of the screen
                     if (offset.x > boxWidthPx / 2f) {
                         panelOpen = true
                     }
@@ -169,10 +192,74 @@ private fun LoadedViewer(
             )
         }
 
-        BackButton(
-            onClick = onExit,
-            modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
-        )
+        // Top-left Controls & Status Overlay
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+                .zIndex(100f) // Keep above the curl canvas
+        ) {
+            BackButton(onClick = onExit)
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 16.dp)
+            ) {
+                val isSpeaking = state.currentDescription != null
+                
+                IconButton(
+                    onClick = {
+                        Log.d("ViewerScreen", "AI Button Clicked")
+                        if (isSpeaking) {
+                            voiceAssistant.stop()
+                            viewModel.clearDescription()
+                        } else {
+                            bmp?.let { viewModel.describeCurrentPage(it) }
+                        }
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.6f),
+                        contentColor = PrimaryTeal
+                    ),
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    if (state.isDescribing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(28.dp),
+                            color = PrimaryTeal,
+                            strokeWidth = 3.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.AutoAwesome,
+                            contentDescription = "AI Description",
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                // Status message overlay - shown when describing or when there is an error
+                val status = state.statusMessage
+                AnimatedVisibility(
+                    visible = status != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.padding(start = 12.dp)
+                ) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = status ?: "",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+        }
 
         if (panelOpen) {
             Box(
@@ -182,6 +269,7 @@ private fun LoadedViewer(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
                     ) { panelOpen = false }
+                    .zIndex(50f)
             )
         }
 
@@ -201,6 +289,7 @@ private fun LoadedViewer(
                 .fillMaxWidth(0.26f)
                 .fillMaxHeight()
                 .offset { IntOffset(animOffset.roundToInt(), 0) }
+                .zIndex(200f)
                 .pointerInput(Unit) {
                     var total = 0f
                     detectHorizontalDragGestures(
@@ -237,22 +326,23 @@ private fun BackButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val targetAlpha by animateFloatAsState(
-        targetValue = if (pressed) 1f else 0.35f,
+        targetValue = if (pressed) 1f else 0.4f,
         animationSpec = tween(150),
         label = "backAlpha"
     )
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(48.dp)
             .alpha(targetAlpha)
+            .background(Color.Black.copy(alpha = 0.6f), androidx.compose.foundation.shape.CircleShape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back to catalogs",
+            contentDescription = "Back",
             tint = PrimaryTeal,
-            modifier = Modifier.size(26.dp)
+            modifier = Modifier.size(28.dp)
         )
     }
 }

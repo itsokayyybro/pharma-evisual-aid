@@ -2,17 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!--
-      Storage: the app uses the Storage Access Framework (ACTION_OPEN_DOCUMENT) which
-      grants per-file read access without any runtime permission on API 19+. We only
-      declare READ_EXTERNAL_STORAGE for legacy devices (<= API 32) as a safety net.
-      No write permission is needed because all files are copied into app-private storage.
-    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Needed for TTS visibility on Android 11+ -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Tablet-oriented but installable on phones too. -->
     <supports-screens
         android:largeScreens="true"
         android:xlargeScreens="true" />
@@ -30,12 +33,6 @@
         android:theme="@style/Theme.EVisualAid"
         tools:targetApi="34">
 
-        <!--
-          Single-activity architecture (Navigation Compose). Orientation is unrestricted at the
-          manifest level; the immersive viewer locks itself to landscape at runtime while the
-          Home/Settings dashboard screens allow both. configChanges keeps the activity alive
-          across rotation/keyboard/uiMode changes.
-        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -47,7 +44,6 @@
             </intent-filter>
         </activity>
 
-        <!-- FileProvider for the "Export All Catalogs" share sheet. -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -58,10 +54,6 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!--
-          WorkManager is initialized on-demand from EVisualAidApp (Configuration.Provider),
-          so we disable the default initializer to keep startup lean.
-        -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
